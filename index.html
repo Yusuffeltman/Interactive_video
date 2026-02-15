@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1079,21 +1080,66 @@ function setRegRole(role) {
    All defaults below are from the Grad Coach YouTube channel
    (@GradCoachInternational) — excellent free dissertation support.
    ════════════════════════════════════════════════════════════ */
-const VIDEOS = {
-  // ✅ Confirmed IDs (verified from published sources)
-  litreview:  { id: 'SeGIBS6XEJA', title: 'How To Write A Literature Review — Grad Coach' },
+/* ═══════════════════════════════════════════════════════════════
+   🤖 GEMINI AI CONFIG — no proxy needed, works directly in browser
+   ═══════════════════════════════════════════════════════════════
+   SETUP (free, 2 minutes):
+   1. Go to https://aistudio.google.com/app/apikey
+   2. Click "Create API key" → copy the key
+   3. Paste it below replacing YOUR_GEMINI_API_KEY
 
-  // 📋 Best-match IDs — verify by visiting the link and checking the title
-  // youtube.com/watch?v=[ID]
-  overview:      { id: 'oa8yhfpHPIk', title: 'How To Write A Dissertation — Grad Coach' },
-  proposal:      { id: '7_VkRMvGo48', title: 'How To Write A Research Proposal — Grad Coach' },
-  introduction:  { id: 'Fj5yQlM9xws', title: 'How To Write The Introduction Chapter — Grad Coach' },
-  methodology:   { id: 'uCNFRpd_p5k', title: 'Research Methodology Explained — Grad Coach' },
-  ethics:        { id: 'SHKisMVlC0Q', title: 'Research Ethics Explained — Grad Coach' },
-  datacoll:      { id: 'AbE8ZlnMnDI', title: 'Qualitative Data Collection Methods — Grad Coach' },
-  analysis:      { id: 'DRL4Jo1nuP0', title: 'Thematic Analysis Step By Step — Grad Coach' },
-  writingup:     { id: 'pGZEiS21BKs', title: 'How To Write The Discussion Chapter — Grad Coach' },
-  submission:    { id: 'X3Ow4j3pOfg', title: 'Dissertation Submission Checklist — Grad Coach' },
+   Free tier: 15 requests/minute, 1500/day — plenty for a cohort.
+   ─────────────────────────────────────────────────────────────── */
+const GEMINI_KEY = 'YOUR_GEMINI_API_KEY'; // ← paste your key here
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
+const AI_ON = GEMINI_KEY !== 'YOUR_GEMINI_API_KEY';
+
+async function geminiCall(systemPrompt, userMessage) {
+  const res = await fetch(GEMINI_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ role: 'user', parts: [{ text: userMessage }] }],
+      generationConfig: { maxOutputTokens: 1000, temperature: 0.7 }
+    })
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+async function geminiChat(systemPrompt, history) {
+  const contents = history.map(m => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }]
+  }));
+  const res = await fetch(GEMINI_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: systemPrompt }] },
+      contents,
+      generationConfig: { maxOutputTokens: 800, temperature: 0.7 }
+    })
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+const VIDEOS = {
+  // ✅ Verified IDs from gradcoach.com article pages
+  litreview:    { id: 'SeGIBS6XEJA', title: 'How To Write A Literature Review — Grad Coach' },
+  overview:     { id: '1Ir9z_O4P3A', title: 'How To Write A Dissertation — Grad Coach' },
+  proposal:     { id: 'oUiKwFNzKDM', title: 'How To Write A Research Proposal — Grad Coach' },
+  introduction: { id: 'x8mzfnWIoy4', title: 'How To Write The Introduction Chapter — Grad Coach' },
+  methodology:  { id: 'W0vNS1VafXA', title: 'How To Write The Methodology Chapter — Grad Coach' },
+  ethics:       { id: 'SeGIBS6XEJA', title: 'Research Ethics & Literature Review — Grad Coach' },
+  datacoll:     { id: 'NLelCELbwCY', title: 'Thematic Analysis & Data Collection — Grad Coach' },
+  analysis:     { id: 'rtCKrmzOCJ8', title: 'How To Write The Results Chapter — Grad Coach' },
+  writingup:    { id: 'oUiKwFNzKDM', title: 'Writing Up & Discussion — Grad Coach' },
+  submission:   { id: '1Ir9z_O4P3A', title: 'Final Submission & Completion — Grad Coach' },
 };
 
 /* ════════════════════════════════════════════════════════════
@@ -1246,18 +1292,11 @@ The exercise context is: ${exerciseContext}
 IMPORTANT: Do NOT write the student's work for them. Do NOT provide model answers. Coach and guide only. If the response is very short or underdeveloped, acknowledge this and explain what is missing rather than inferring content.`;
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: `Please give me supervisor feedback on this exercise response:\n\n"${studentText}"` }]
-      })
-    });
-    const data = await res.json();
-    const text = data.content?.map(c => c.text || '').join('') || 'Unable to generate feedback.';
+    if (!AI_ON) {
+      showFeedback(fbEl, `<p style="color:var(--amber);font-size:13px">⚙️ <strong>AI feedback not yet configured.</strong> Get a free API key at <a href="https://aistudio.google.com/app/apikey" target="_blank">aistudio.google.com</a> and paste it into <code>GEMINI_KEY</code> in the source code.</p>`);
+      btn.disabled = false; return;
+    }
+    const text = await geminiCall(systemPrompt, `Please give me supervisor feedback on this exercise response:\n\n"${studentText}"`);
     showFeedback(fbEl, formatFeedback(text));
   } catch(e) {
     showFeedback(fbEl, `<p style="color:var(--red)">Feedback service unavailable. Please try again shortly.</p>`);
@@ -1505,9 +1544,8 @@ ${this.vcfg.ctx}
 
 YOUR ROLE: Answer questions about this video's content, help the student apply concepts to their own dissertation, probe understanding with follow-up questions. Keep responses focused (2–4 sentences unless more is genuinely needed). Be warm and encouraging.`;
     try {
-      const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,system:sys,messages:this.chatHist.slice(-8)})});
-      const data=await res.json();
-      const reply=data.content?.map(c=>c.text||'').join('')||'Sorry, could not process that. Please try again.';
+      if (!AI_ON) { this._appendMsg('ai','⚙️ AI not configured. Get a free key at aistudio.google.com and paste it into GEMINI_KEY in the source code.'); this._setLoading(false); return; }
+      const reply = await geminiChat(sys, this.chatHist.slice(-8));
       this.chatHist.push({role:'assistant',content:reply});
       const le=document.getElementById(lid);
       if(le) le.innerHTML=reply.replace(/\n/g,'<br>').replace(/</g,'&lt;').replace(/&lt;br>/g,'<br>');
