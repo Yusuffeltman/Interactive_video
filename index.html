@@ -931,12 +931,18 @@ if (FB_ON && FB_AUTH) {
       if (profile) { saveSession(profile); bootApp(profile); }
       else { await FB_AUTH.signOut(); }
     }
-    // else: auth screen stays visible
+    // else: no user → auth screen stays visible (already visible by default)
   });
 } else {
-  // Firebase not configured — check localStorage session as fallback
-  const stored = localStorage.getItem('diss-session-v2');
-  if (stored) { try { const p = JSON.parse(stored); saveSession(p); bootApp(p); } catch(e) {} }
+  // Firebase not configured — restore localStorage session only for real (non-dev) users
+  try {
+    const stored = localStorage.getItem('diss-session-v2');
+    if (stored) {
+      const p = JSON.parse(stored);
+      if (p && !p._isDev) { saveSession(p); bootApp(p); }
+      else { localStorage.removeItem('diss-session-v2'); } // clear stale dev sessions
+    }
+  } catch(e) { localStorage.removeItem('diss-session-v2'); }
 }
 
 // ── Profile modal ──
@@ -1093,6 +1099,7 @@ function setRegRole(role) {
 const GEMINI_KEY = 'YOUR_GEMINI_API_KEY'; // ← paste your key here
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
 const AI_ON = GEMINI_KEY !== 'YOUR_GEMINI_API_KEY';
+const AI_CONTEXTS = {}; // populated by ex() calls — stores aiContext per exercise id
 
 async function geminiCall(systemPrompt, userMessage) {
   const res = await fetch(GEMINI_URL, {
@@ -1110,10 +1117,20 @@ async function geminiCall(systemPrompt, userMessage) {
 }
 
 async function geminiChat(systemPrompt, history) {
-  const contents = history.map(m => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }]
-  }));
+  // Gemini requires strictly alternating user/model turns starting with user
+  // Filter and fix the history to ensure this
+  const contents = [];
+  let lastRole = null;
+  for (const m of history) {
+    const role = m.role === 'assistant' ? 'model' : 'user';
+    if (role === lastRole) continue; // skip consecutive same-role messages
+    contents.push({ role, parts: [{ text: m.content }] });
+    lastRole = role;
+  }
+  // Must end with user turn
+  if (!contents.length || contents[contents.length - 1].role !== 'user') {
+    throw new Error('Chat history must end with a user message');
+  }
   const res = await fetch(GEMINI_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1124,8 +1141,8 @@ async function geminiChat(systemPrompt, history) {
     })
   });
   const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response received.';
 }
 
 const VIDEOS = {
@@ -1254,7 +1271,8 @@ const VC = {
    Calls the Anthropic API to give supervisor-style
    feedback on student writing exercises.
    ─────────────────────────────────────────────── */
-async function getAIFeedback(exerciseId, exerciseContext, studentText) {
+async function getAIFeedback(exerciseId, studentText) {
+  const exerciseContext = AI_CONTEXTS[exerciseId] || exerciseId;
   const fbEl = document.getElementById('fb-' + exerciseId);
   const btn  = document.getElementById('ai-btn-' + exerciseId);
   if (!studentText || studentText.trim().length < 30) {
@@ -1360,7 +1378,7 @@ class InteractiveVideoPlayer {
     <svg width="11" height="11" viewBox="0 0 24 24" fill="rgba(255,255,255,0.5)" stroke="none"><polygon points="5 3 19 12 5 21"/></svg>
     <span class="ivp-label">Watch</span>
     <span class="ivp-vid-title">${ttl}</span>
-    <button class="ivp-ibtn" id="ctbtn-${this.cid}" onclick="_ivp_${this.cid}.toggleChat()">🤖 AI Chat</button>
+    <button class="ivp-ibtn" id="ctbtn-${this.cid}" onclick="window['_ivp_${this.cid}'].toggleChat()">🤖 AI Chat</button>
   </div>
   <div class="ivp-body" id="ibody-${this.cid}">
     <div class="ivp-vcol">
@@ -1369,7 +1387,7 @@ class InteractiveVideoPlayer {
         <div class="ivp-overlay" id="ovl-${this.cid}"></div>
       </div>
       <div class="ivp-chbar">
-        <div class="ivp-track" id="trk-${this.cid}" onclick="_ivp_${this.cid}._seekTrack(event)">
+        <div class="ivp-track" id="trk-${this.cid}" onclick="window['_ivp_${this.cid}']._seekTrack(event)">
           <div class="ivp-fill" id="fill-${this.cid}"></div>
         </div>
         <div class="ivp-ch-lbls" id="chlbls-${this.cid}"></div>
@@ -1385,8 +1403,8 @@ class InteractiveVideoPlayer {
         <div class="ivp-msg ai">👋 I know this video's content. Ask me anything — concepts, how it applies to your dissertation, or anything you'd like to explore further.</div>
       </div>
       <div class="ivp-chat-inp-row">
-        <textarea class="ivp-chat-ta" id="cta-${this.cid}" placeholder="Ask about the video…" rows="2" onkeydown="_ivp_${this.cid}._ckd(event)"></textarea>
-        <button class="ivp-chat-send" id="csnd-${this.cid}" onclick="_ivp_${this.cid}.sendChat()">➤</button>
+        <textarea class="ivp-chat-ta" id="cta-${this.cid}" placeholder="Ask about the video…" rows="2" onkeydown="window['_ivp_${this.cid}']._ckd(event)"></textarea>
+        <button class="ivp-chat-send" id="csnd-${this.cid}" onclick="window['_ivp_${this.cid}'].sendChat()">➤</button>
       </div>
     </div>
   </div>
@@ -1397,7 +1415,7 @@ class InteractiveVideoPlayer {
   _buildChLabels() {
     const lbl=document.getElementById('chlbls-'+this.cid); if(!lbl) return;
     lbl.innerHTML=this.vcfg.chapters.map((c,i)=>
-      `<span class="ivp-ch-l" id="cl-${this.cid}-${i}" onclick="_ivp_${this.cid}.seekTo(${c.t})">${c.n}</span>`
+      `<span class="ivp-ch-l" id="cl-${this.cid}-${i}" onclick="window['_ivp_${this.cid}'].seekTo(${c.t})">${c.n}</span>`
     ).join('');
   }
 
@@ -1465,24 +1483,26 @@ class InteractiveVideoPlayer {
       inner=`<p class="ivp-time-tag">⏸ Paused at ${ts}</p>
 <div class="ivp-card-tag mcq">Quick Check</div>
 <p class="ivp-card-q">${x.q}</p>
-<div class="ivp-opts">${x.opts.map((o,i)=>`<div class="ivp-opt" id="oo-${this.cid}-${i}" onclick="_ivp_${this.cid}._pick(${i},${x.ok},'${x.id}',\`${x.fb.replace(/`/g,"'")}\`)"><span class="ivp-let">${L[i]}</span><span>${o}</span></div>`).join('')}</div>
+<div class="ivp-opts">${x.opts.map((o,i)=>`<div class="ivp-opt" id="oo-${this.cid}-${i}" onclick="window['_ivp_${this.cid}']._pick(${i})"><span class="ivp-let">${L[i]}</span><span>${o}</span></div>`).join('')}</div>
 <div class="ivp-cfb" id="cfb-${this.cid}"></div>
-<div class="ivp-cbtns"><button class="ivp-skip-btn" onclick="_ivp_${this.cid}.resume()">Skip & Resume ▶</button></div>`;
+<div class="ivp-cbtns"><button class="ivp-skip-btn" onclick="window['_ivp_${this.cid}'].resume()">Skip & Resume ▶</button></div>`;
     } else {
       inner=`<p class="ivp-time-tag">⏸ Paused at ${ts}</p>
 <div class="ivp-card-tag refl">Reflection</div>
 <p class="ivp-card-q">${x.q}</p>
 <textarea id="ivta-${this.cid}" rows="4" placeholder="${(x.ph||'').replace(/"/g,"'")}"></textarea>
 <div class="ivp-cbtns">
-  <button class="ivp-go" onclick="_ivp_${this.cid}._saveRefl('${x.id}',\`${x.q.replace(/`/g,"'")}\`)">💾 Save & Resume ▶</button>
-  <button class="ivp-skip-btn" onclick="_ivp_${this.cid}.resume()">Skip ▶</button>
+  <button class="ivp-go" onclick="window['_ivp_${this.cid}']._saveRefl()">💾 Save & Resume ▶</button>
+  <button class="ivp-skip-btn" onclick="window['_ivp_${this.cid}'].resume()">Skip ▶</button>
 </div>`;
     }
     ovl.innerHTML=`<div class="ivp-card">${inner}</div>`;
     ovl.classList.add('show');
   }
 
-  _pick(chosen,ok,xid,fb) {
+  _pick(chosen) {
+    const x = this._curIX; if(!x) return;
+    const ok = x.ok; const xid = x.id; const fb = x.fb || '';
     document.querySelectorAll('[id^="oo-'+this.cid+'-"]').forEach((el,i)=>{
       el.classList.add('locked');
       if(i===ok) el.classList.add('correct');
@@ -1490,14 +1510,15 @@ class InteractiveVideoPlayer {
     });
     const f=document.getElementById('cfb-'+this.cid);
     if(f){f.className='ivp-cfb show '+(chosen===ok?'ok':'err');f.innerHTML=fb;}
-    _rec(this.key,xid,'mcq',this.vcfg.ix.find(x=>x.id===xid)?.q||'',chosen===ok?'Correct (option '+chosen+')':'Wrong (option '+chosen+')',chosen===ok,this.t);
+    _rec(this.key,xid,'mcq',x.q||'',chosen===ok?'Correct (option '+chosen+')':'Wrong (option '+chosen+')',chosen===ok,this.t);
     setTimeout(()=>this.resume(),3500);
   }
 
-  _saveRefl(xid,q) {
+  _saveRefl() {
+    const x = this._curIX; if(!x) return;
     const ta=document.getElementById('ivta-'+this.cid);
     const txt=ta?ta.value.trim():'';
-    _rec(this.key,xid,'reflection',q,txt,null,this.t);
+    _rec(this.key,x.id,'reflection',x.q||'',txt,null,this.t);
     this.resume();
   }
 
@@ -1550,7 +1571,7 @@ YOUR ROLE: Answer questions about this video's content, help the student apply c
       const le=document.getElementById(lid);
       if(le) le.innerHTML=reply.replace(/\n/g,'<br>').replace(/</g,'&lt;').replace(/&lt;br>/g,'<br>');
     } catch(e){
-      const le=document.getElementById(lid); if(le) le.innerHTML='Connection issue — please try again.';
+      const le=document.getElementById(lid); if(le) le.innerHTML=`⚠️ Error: ${e.message||'Connection issue — please try again.'}`;
     }
     snd.disabled=false; msgs.scrollTop=msgs.scrollHeight;
   }
@@ -1647,7 +1668,7 @@ ${mine.length?`<table class="data-tbl"><thead><tr><th>Video</th><th>Type</th><th
    HTML HELPERS
    ─────────────────────────────────────────────── */
 function vid(key) {
-  const divId = 'ivp-' + key + '-' + Date.now();
+  const divId = 'ivp_' + key + '_' + Date.now();
   // Launch interactive player after DOM renders
   setTimeout(() => {
     if (document.getElementById(divId)) new InteractiveVideoPlayer(divId, key);
@@ -1657,7 +1678,9 @@ function vid(key) {
 
 function ex(id, label, hint, aiFeedback, aiContext, height=110) {
   const saved = ls(id) || '';
-  const aiBtn = aiFeedback ? `<button class="btn btn-ai" id="ai-btn-${id}" onclick="getAIFeedback('${id}','${(aiContext||'').replace(/'/g,"\\'")}',document.getElementById('${id}').value)">
+  // Store context in global map to avoid quote-escaping issues in onclick attributes
+  if (aiFeedback && aiContext) AI_CONTEXTS[id] = aiContext;
+  const aiBtn = aiFeedback ? `<button class="btn btn-ai" id="ai-btn-${id}" onclick="getAIFeedback('${id}',document.getElementById('${id}').value)">
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
     Get AI Feedback
   </button>` : '';
